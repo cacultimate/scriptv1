@@ -1,0 +1,146 @@
+-- Secure loader for CAC Ultimate
+local HttpService = game:GetService("HttpService")
+
+local http_request = (syn and syn.request) or (http and http.request) or http_request or (fluxus and fluxus.request) or request
+if not http_request then
+    error("Executor does not support HTTP requests")
+end
+
+local API_BASE = "https://cac-licensing-api.cacultimatev1.workers.dev"
+
+local function parseJson(raw)
+    local ok, decoded = pcall(function()
+        return HttpService:JSONDecode(raw)
+    end)
+    if ok then return decoded end
+    return nil
+end
+
+local function gethwid()
+    local file = "cac_ultimate_hwid_v4.txt"
+    if isfile and readfile and writefile then
+        if isfile(file) then
+            return tostring(readfile(file)):gsub("%s+", "")
+        end
+        local generated = HttpService:GenerateGUID(false)
+        pcall(function() writefile(file, generated) end)
+        return generated
+    end
+    return HttpService:GenerateGUID(false)
+end
+
+local function postJson(path, payload)
+    local ok, response = pcall(function()
+        return http_request({
+            Url = API_BASE .. path,
+            Method = "POST",
+            Headers = { ["Content-Type"] = "application/json" },
+            Body = HttpService:JSONEncode(payload)
+        })
+    end)
+
+    if not ok or not response then
+        return false, nil, "Network error"
+    end
+
+    local data = parseJson(response.Body or "")
+    if response.StatusCode < 200 or response.StatusCode > 299 then
+        local msg = "Request failed"
+        if data and data.error and data.error.message then
+            msg = tostring(data.error.message)
+        end
+        return false, data, msg
+    end
+
+    return true, data, nil
+end
+
+local function getText(url)
+    local ok, response = pcall(function()
+        return http_request({ Url = url, Method = "GET" })
+    end)
+    if not ok or not response then
+        return false, nil, "Download failed"
+    end
+    if response.StatusCode < 200 or response.StatusCode > 299 then
+        return false, nil, "Download HTTP " .. tostring(response.StatusCode)
+    end
+    return true, response.Body, nil
+end
+
+local hwid = gethwid()
+local clientVersion = "cac-loader-v1"
+
+local sessionToken = nil
+
+local okAuto, dataAuto = postJson("/v1/auth/session/auto-start", {
+    hwid = hwid,
+    device_label = "roblox-client",
+    client_version = clientVersion
+})
+
+if okAuto and dataAuto and dataAuto.ok and dataAuto.data and dataAuto.data.session_token then
+    sessionToken = tostring(dataAuto.data.session_token)
+end
+
+if not sessionToken then
+    local shared = (_G or {})
+    pcall(function()
+        if getgenv then
+            shared = getgenv()
+        end
+    end)
+
+    local key = nil
+    if shared and shared.CAC_KEY then
+        key = tostring(shared.CAC_KEY)
+    end
+
+    if not key or key:gsub("%s+", "") == "" then
+        error("Auto-login unavailable. Set _G.CAC_KEY='YOUR_KEY' and run loader again.")
+    end
+
+    local okStart, dataStart, errStart = postJson("/v1/auth/session/start", {
+        key = key,
+        hwid = hwid,
+        device_label = "roblox-client",
+        client_version = clientVersion
+    })
+
+    if not okStart or not dataStart or not dataStart.ok or not dataStart.data or not dataStart.data.session_token then
+        error("Login failed: " .. tostring(errStart or "unknown"))
+    end
+
+    sessionToken = tostring(dataStart.data.session_token)
+end
+
+local okTicket, dataTicket, errTicket = postJson("/v1/client/script/ticket", {
+    session_token = sessionToken,
+    hwid = hwid
+})
+
+if not okTicket or not dataTicket or not dataTicket.ok or not dataTicket.data or not dataTicket.data.download_url then
+    error("Failed to get script ticket: " .. tostring(errTicket or "unknown"))
+end
+
+local okScript, scriptBody, errScript = getText(tostring(dataTicket.data.download_url))
+if not okScript or not scriptBody or scriptBody == "" then
+    error("Failed to download protected script: " .. tostring(errScript or "unknown"))
+end
+
+local sharedEnv = (_G or {})
+pcall(function()
+    if getgenv then
+        sharedEnv = getgenv()
+    end
+end)
+
+sharedEnv.CAC_PREAUTH_TOKEN = sessionToken
+sharedEnv.CAC_KEY = nil
+
+local fn, compileErr = loadstring(scriptBody)
+if not fn then
+    error("Compile failed: " .. tostring(compileErr))
+end
+
+fn()
