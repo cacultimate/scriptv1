@@ -8,6 +8,16 @@ end
 
 local API_BASE = "https://cac-licensing-api.cacultimatev1.workers.dev"
 
+local function getShared()
+    local shared = (_G or {})
+    pcall(function()
+        if getgenv then
+            shared = getgenv()
+        end
+    end)
+    return shared
+end
+
 local function parseJson(raw)
     local ok, decoded = pcall(function()
         return HttpService:JSONDecode(raw)
@@ -27,6 +37,29 @@ local function gethwid()
         return generated
     end
     return HttpService:GenerateGUID(false)
+end
+
+local function readLoaderKeyFromFile()
+    local candidates = {
+        "cac_loader_key.txt",
+        "workspace/cac_loader_key.txt",
+        "Workspace/cac_loader_key.txt",
+        "CAC_Output/cac_loader_key.txt"
+    }
+
+    if isfile and readfile then
+        for _, path in ipairs(candidates) do
+            local okExists, exists = pcall(function() return isfile(path) end)
+            if okExists and exists then
+                local okRead, content = pcall(function() return readfile(path) end)
+                if okRead and content and tostring(content):gsub("%s+", "") ~= "" then
+                    return tostring(content):gsub("%s+", "")
+                end
+            end
+        end
+    end
+
+    return nil
 end
 
 local function postJson(path, payload)
@@ -84,20 +117,24 @@ if okAuto and dataAuto and dataAuto.ok and dataAuto.data and dataAuto.data.sessi
 end
 
 if not sessionToken then
-    local shared = (_G or {})
-    pcall(function()
-        if getgenv then
-            shared = getgenv()
-        end
-    end)
+    local shared = getShared()
 
     local key = nil
     if shared and shared.CAC_KEY then
         key = tostring(shared.CAC_KEY)
     end
+    if (not key or key:gsub("%s+", "") == "") and shared and shared.KEY then
+        key = tostring(shared.KEY)
+    end
+    if (not key or key:gsub("%s+", "") == "") and shared and shared.cac_key then
+        key = tostring(shared.cac_key)
+    end
+    if not key or key:gsub("%s+", "") == "" then
+        key = readLoaderKeyFromFile()
+    end
 
     if not key or key:gsub("%s+", "") == "" then
-        error("Auto-login unavailable. Set _G.CAC_KEY='YOUR_KEY' and run loader again.")
+        error("Auto-login unavailable. Run in ONE line: getgenv().CAC_KEY='YOUR_KEY'; loadstring(game:HttpGet('https://raw.githubusercontent.com/cacultimate/scriptv1/refs/heads/main/executor-loader.lua'))()")
     end
 
     local okStart, dataStart, errStart = postJson("/v1/auth/session/start", {
@@ -128,12 +165,7 @@ if not okScript or not scriptBody or scriptBody == "" then
     error("Failed to download protected script: " .. tostring(errScript or "unknown"))
 end
 
-local sharedEnv = (_G or {})
-pcall(function()
-    if getgenv then
-        sharedEnv = getgenv()
-    end
-end)
+local sharedEnv = getShared()
 
 sharedEnv.CAC_PREAUTH_TOKEN = sessionToken
 sharedEnv.CAC_KEY = nil
