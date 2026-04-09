@@ -96,6 +96,10 @@ local function getText(url)
         return false, nil, "Download failed"
     end
     if response.StatusCode < 200 or response.StatusCode > 299 then
+        local parsed = parseJson(response.Body or "")
+        if parsed and parsed.error and parsed.error.message then
+            return false, nil, "Download HTTP " .. tostring(response.StatusCode) .. ": " .. tostring(parsed.error.message)
+        end
         return false, nil, "Download HTTP " .. tostring(response.StatusCode)
     end
     return true, response.Body, nil
