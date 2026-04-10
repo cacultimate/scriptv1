@@ -62,6 +62,23 @@ local function readLoaderKeyFromFile()
     return nil
 end
 
+local function readExplicitKeyFromShared(shared)
+    local key = nil
+    if shared and shared.CAC_KEY then
+        key = tostring(shared.CAC_KEY)
+    end
+    if (not key or key:gsub("%s+", "") == "") and shared and shared.KEY then
+        key = tostring(shared.KEY)
+    end
+    if (not key or key:gsub("%s+", "") == "") and shared and shared.cac_key then
+        key = tostring(shared.cac_key)
+    end
+    if not key then return nil end
+    key = key:gsub("%s+", "")
+    if key == "" then return nil end
+    return key
+end
+
 local function postJson(path, payload)
     local ok, response = pcall(function()
         return http_request({
@@ -111,39 +128,12 @@ local clientVersion = "cac-loader-v1"
 local sessionToken = nil
 local resolvedKey = nil
 
-local okAuto, dataAuto = postJson("/v1/auth/session/auto-start", {
-    hwid = hwid,
-    device_label = "roblox-client",
-    client_version = clientVersion
-})
+local shared = getShared()
+local explicitKey = readExplicitKeyFromShared(shared)
 
-if okAuto and dataAuto and dataAuto.ok and dataAuto.data and dataAuto.data.session_token then
-    sessionToken = tostring(dataAuto.data.session_token)
-end
-
-if not sessionToken then
-    local shared = getShared()
-
-    local key = nil
-    if shared and shared.CAC_KEY then
-        key = tostring(shared.CAC_KEY)
-    end
-    if (not key or key:gsub("%s+", "") == "") and shared and shared.KEY then
-        key = tostring(shared.KEY)
-    end
-    if (not key or key:gsub("%s+", "") == "") and shared and shared.cac_key then
-        key = tostring(shared.cac_key)
-    end
-    if not key or key:gsub("%s+", "") == "" then
-        key = readLoaderKeyFromFile()
-    end
-
-    if not key or key:gsub("%s+", "") == "" then
-        error("Auto-login unavailable. Run in ONE line: getgenv().CAC_KEY='YOUR_KEY'; loadstring(game:HttpGet('https://raw.githubusercontent.com/cacultimate/scriptv1/refs/heads/main/executor-loader.lua'))()")
-    end
-
+if explicitKey then
     local okStart, dataStart, errStart = postJson("/v1/auth/session/start", {
-        key = key,
+        key = explicitKey,
         hwid = hwid,
         device_label = "roblox-client",
         client_version = clientVersion
@@ -154,7 +144,39 @@ if not sessionToken then
     end
 
     sessionToken = tostring(dataStart.data.session_token)
-    resolvedKey = tostring(key)
+    resolvedKey = tostring(explicitKey)
+else
+    local okAuto, dataAuto = postJson("/v1/auth/session/auto-start", {
+        hwid = hwid,
+        device_label = "roblox-client",
+        client_version = clientVersion
+    })
+
+    if okAuto and dataAuto and dataAuto.ok and dataAuto.data and dataAuto.data.session_token then
+        sessionToken = tostring(dataAuto.data.session_token)
+    end
+
+    if not sessionToken then
+        local key = readLoaderKeyFromFile()
+
+        if not key or key:gsub("%s+", "") == "" then
+            error("Auto-login unavailable. Run in ONE line: getgenv().CAC_KEY='YOUR_KEY'; loadstring(game:HttpGet('https://raw.githubusercontent.com/cacultimate/scriptv1/refs/heads/main/executor-loader.lua'))()")
+        end
+
+        local okStart, dataStart, errStart = postJson("/v1/auth/session/start", {
+            key = key,
+            hwid = hwid,
+            device_label = "roblox-client",
+            client_version = clientVersion
+        })
+
+        if not okStart or not dataStart or not dataStart.ok or not dataStart.data or not dataStart.data.session_token then
+            error("Login failed: " .. tostring(errStart or "unknown"))
+        end
+
+        sessionToken = tostring(dataStart.data.session_token)
+        resolvedKey = tostring(key)
+    end
 end
 
 local okTicket, dataTicket, errTicket = postJson("/v1/client/script/ticket", {
@@ -183,6 +205,8 @@ if resolvedKey and resolvedKey ~= "" then
     end)
 end
 sharedEnv.CAC_KEY = nil
+sharedEnv.KEY = nil
+sharedEnv.cac_key = nil
 
 local fn, compileErr = loadstring(scriptBody)
 if not fn then
