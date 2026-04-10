@@ -109,6 +109,7 @@ local hwid = gethwid()
 local clientVersion = "cac-loader-v1"
 
 local sessionToken = nil
+local resolvedKey = nil
 
 local okAuto, dataAuto = postJson("/v1/auth/session/auto-start", {
     hwid = hwid,
@@ -153,6 +154,7 @@ if not sessionToken then
     end
 
     sessionToken = tostring(dataStart.data.session_token)
+    resolvedKey = tostring(key)
 end
 
 local okTicket, dataTicket, errTicket = postJson("/v1/client/script/ticket", {
@@ -172,6 +174,14 @@ end
 local sharedEnv = getShared()
 
 sharedEnv.CAC_PREAUTH_TOKEN = sessionToken
+if resolvedKey and resolvedKey ~= "" then
+    sharedEnv.CAC_LAST_KEY = resolvedKey
+    pcall(function()
+        if writefile then
+            writefile("cac_loader_key.txt", resolvedKey)
+        end
+    end)
+end
 sharedEnv.CAC_KEY = nil
 
 local fn, compileErr = loadstring(scriptBody)
