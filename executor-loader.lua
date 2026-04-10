@@ -62,6 +62,37 @@ local function readLoaderKeyFromFile()
     return nil
 end
 
+local function autoLoginDisableFlagPaths()
+    return {
+        "cac_disable_auto_login.flag",
+        "workspace/cac_disable_auto_login.flag",
+        "Workspace/cac_disable_auto_login.flag",
+        "CAC_Output/cac_disable_auto_login.flag"
+    }
+end
+
+local function isAutoLoginDisabled()
+    if not isfile then return false end
+    for _, path in ipairs(autoLoginDisableFlagPaths()) do
+        local okExists, exists = pcall(function() return isfile(path) end)
+        if okExists and exists then
+            return true
+        end
+    end
+    return false
+end
+
+local function clearAutoLoginDisabledFlag()
+    if not (delfile and isfile) then return end
+    for _, path in ipairs(autoLoginDisableFlagPaths()) do
+        pcall(function()
+            if isfile(path) then
+                delfile(path)
+            end
+        end)
+    end
+end
+
 local function readExplicitKeyFromShared(shared)
     local key = nil
     if shared and shared.CAC_KEY then
@@ -145,37 +176,40 @@ if explicitKey then
 
     sessionToken = tostring(dataStart.data.session_token)
     resolvedKey = tostring(explicitKey)
+    clearAutoLoginDisabledFlag()
 else
-    local okAuto, dataAuto = postJson("/v1/auth/session/auto-start", {
-        hwid = hwid,
-        device_label = "roblox-client",
-        client_version = clientVersion
-    })
+    local disabled = isAutoLoginDisabled()
+    local keyFromFile = readLoaderKeyFromFile()
 
-    if okAuto and dataAuto and dataAuto.ok and dataAuto.data and dataAuto.data.session_token then
-        sessionToken = tostring(dataAuto.data.session_token)
-    end
-
-    if not sessionToken then
-        local key = readLoaderKeyFromFile()
-
-        if not key or key:gsub("%s+", "") == "" then
-            error("Auto-login unavailable. Run in ONE line: getgenv().CAC_KEY='YOUR_KEY'; loadstring(game:HttpGet('https://raw.githubusercontent.com/cacultimate/scriptv1/refs/heads/main/executor-loader.lua'))()")
-        end
-
+    if keyFromFile and keyFromFile:gsub("%s+", "") ~= "" then
         local okStart, dataStart, errStart = postJson("/v1/auth/session/start", {
-            key = key,
+            key = keyFromFile,
             hwid = hwid,
             device_label = "roblox-client",
             client_version = clientVersion
         })
 
         if not okStart or not dataStart or not dataStart.ok or not dataStart.data or not dataStart.data.session_token then
-            error("Login failed: " .. tostring(errStart or "unknown"))
+            error("Saved key login failed. Update key or wipe local login data. Error: " .. tostring(errStart or "unknown"))
         end
 
         sessionToken = tostring(dataStart.data.session_token)
-        resolvedKey = tostring(key)
+        resolvedKey = tostring(keyFromFile)
+        clearAutoLoginDisabledFlag()
+    elseif disabled then
+        error("Auto-login is disabled on this device. Set getgenv().CAC_KEY='YOUR_KEY' and run loader again.")
+    else
+        local okAuto, dataAuto, errAuto = postJson("/v1/auth/session/auto-start", {
+            hwid = hwid,
+            device_label = "roblox-client",
+            client_version = clientVersion
+        })
+
+        if not okAuto or not dataAuto or not dataAuto.ok or not dataAuto.data or not dataAuto.data.session_token then
+            error("Auto-login unavailable. Set getgenv().CAC_KEY='YOUR_KEY' and run loader again. Error: " .. tostring(errAuto or "unknown"))
+        end
+
+        sessionToken = tostring(dataAuto.data.session_token)
     end
 end
 
