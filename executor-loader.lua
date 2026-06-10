@@ -39,16 +39,27 @@ local function gethwid()
     return HttpService:GenerateGUID(false)
 end
 
-local function readLoaderKeyFromFile()
-    local candidates = {
+local function deviceTokenPaths()
+    return {
+        "cac_device_token.txt",
+        "workspace/cac_device_token.txt",
+        "Workspace/cac_device_token.txt",
+        "CAC_Output/cac_device_token.txt"
+    }
+end
+
+local function legacyLoaderKeyPaths()
+    return {
         "cac_loader_key.txt",
         "workspace/cac_loader_key.txt",
         "Workspace/cac_loader_key.txt",
         "CAC_Output/cac_loader_key.txt"
     }
+end
 
+local function readFirstExistingFile(paths)
     if isfile and readfile then
-        for _, path in ipairs(candidates) do
+        for _, path in ipairs(paths) do
             local okExists, exists = pcall(function() return isfile(path) end)
             if okExists and exists then
                 local okRead, content = pcall(function() return readfile(path) end)
@@ -60,6 +71,46 @@ local function readLoaderKeyFromFile()
     end
 
     return nil
+end
+
+local function writeFirstPossibleFile(paths, content)
+    if not writefile then return false end
+    for _, path in ipairs(paths) do
+        local ok = pcall(function()
+            writefile(path, tostring(content or ""))
+        end)
+        if ok then return true end
+    end
+    return false
+end
+
+local function deleteFiles(paths)
+    if not (delfile and isfile) then return end
+    for _, path in ipairs(paths) do
+        pcall(function()
+            if isfile(path) then
+                delfile(path)
+            end
+        end)
+    end
+end
+
+local function readDeviceTokenFromFile()
+    return readFirstExistingFile(deviceTokenPaths())
+end
+
+local function saveDeviceToken(token)
+    token = tostring(token or ""):gsub("%s+", "")
+    if token == "" then return false end
+    return writeFirstPossibleFile(deviceTokenPaths(), token)
+end
+
+local function readLegacyLoaderKeyFromFile()
+    return readFirstExistingFile(legacyLoaderKeyPaths())
+end
+
+local function deleteLegacyLoaderKeyFiles()
+    deleteFiles(legacyLoaderKeyPaths())
 end
 
 local function autoLoginDisableFlagPaths()
@@ -157,7 +208,7 @@ local hwid = gethwid()
 local clientVersion = "cac-loader-v1"
 
 local sessionToken = nil
-local resolvedKey = nil
+local deviceToken = nil
 
 local shared = getShared()
 local explicitKey = readExplicitKeyFromShared(shared)
@@ -166,6 +217,7 @@ if explicitKey then
     local okStart, dataStart, errStart = postJson("/v1/auth/session/start", {
         key = explicitKey,
         hwid = hwid,
+        product = "script",
         device_label = "roblox-client",
         client_version = clientVersion
     })
@@ -175,32 +227,22 @@ if explicitKey then
     end
 
     sessionToken = tostring(dataStart.data.session_token)
-    resolvedKey = tostring(explicitKey)
+    deviceToken = dataStart.data.device_token and tostring(dataStart.data.device_token) or nil
+    if deviceToken and deviceToken ~= "" then
+        saveDeviceToken(deviceToken)
+    end
+    deleteLegacyLoaderKeyFiles()
     clearAutoLoginDisabledFlag()
 else
     local disabled = isAutoLoginDisabled()
-    local keyFromFile = readLoaderKeyFromFile()
+    local savedDeviceToken = readDeviceTokenFromFile()
+    local legacyKeyFromFile = readLegacyLoaderKeyFromFile()
 
-    if keyFromFile and keyFromFile:gsub("%s+", "") ~= "" then
-        local okStart, dataStart, errStart = postJson("/v1/auth/session/start", {
-            key = keyFromFile,
-            hwid = hwid,
-            device_label = "roblox-client",
-            client_version = clientVersion
-        })
-
-        if not okStart or not dataStart or not dataStart.ok or not dataStart.data or not dataStart.data.session_token then
-            error("Saved key login failed. Update key or wipe local login data. Error: " .. tostring(errStart or "unknown"))
-        end
-
-        sessionToken = tostring(dataStart.data.session_token)
-        resolvedKey = tostring(keyFromFile)
-        clearAutoLoginDisabledFlag()
-    elseif disabled then
-        error("Auto-login is disabled on this device. Set getgenv().CAC_KEY='YOUR_KEY' and run loader again.")
-    else
+    if savedDeviceToken and savedDeviceToken:gsub("%s+", "") ~= "" and not disabled then
         local okAuto, dataAuto, errAuto = postJson("/v1/auth/session/auto-start", {
+            device_token = savedDeviceToken,
             hwid = hwid,
+            product = "script",
             device_label = "roblox-client",
             client_version = clientVersion
         })
@@ -210,6 +252,34 @@ else
         end
 
         sessionToken = tostring(dataAuto.data.session_token)
+        deviceToken = dataAuto.data.device_token and tostring(dataAuto.data.device_token) or savedDeviceToken
+        if deviceToken and deviceToken ~= "" and deviceToken ~= savedDeviceToken then
+            saveDeviceToken(deviceToken)
+        end
+    elseif legacyKeyFromFile and legacyKeyFromFile:gsub("%s+", "") ~= "" then
+        local okStart, dataStart, errStart = postJson("/v1/auth/session/start", {
+            key = legacyKeyFromFile,
+            hwid = hwid,
+            product = "script",
+            device_label = "roblox-client",
+            client_version = clientVersion
+        })
+
+        if not okStart or not dataStart or not dataStart.ok or not dataStart.data or not dataStart.data.session_token then
+            error("Saved key login failed. Update key or wipe local login data. Error: " .. tostring(errStart or "unknown"))
+        end
+
+        sessionToken = tostring(dataStart.data.session_token)
+        deviceToken = dataStart.data.device_token and tostring(dataStart.data.device_token) or nil
+        if deviceToken and deviceToken ~= "" then
+            saveDeviceToken(deviceToken)
+            deleteLegacyLoaderKeyFiles()
+        end
+        clearAutoLoginDisabledFlag()
+    elseif disabled then
+        error("Auto-login is disabled on this device. Set getgenv().CAC_KEY='YOUR_KEY' and run loader again.")
+    else
+        error("Auto-login unavailable. Set getgenv().CAC_KEY='YOUR_KEY' and run loader again.")
     end
 end
 
@@ -230,14 +300,11 @@ end
 local sharedEnv = getShared()
 
 sharedEnv.CAC_PREAUTH_TOKEN = sessionToken
-if resolvedKey and resolvedKey ~= "" then
-    sharedEnv.CAC_LAST_KEY = resolvedKey
-    pcall(function()
-        if writefile then
-            writefile("cac_loader_key.txt", resolvedKey)
-        end
-    end)
-end
+sharedEnv.CAC_PREAUTH = {
+    session_token = sessionToken,
+    device_token = deviceToken
+}
+sharedEnv.CAC_LAST_KEY = nil
 sharedEnv.CAC_KEY = nil
 sharedEnv.KEY = nil
 sharedEnv.cac_key = nil
