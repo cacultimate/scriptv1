@@ -1,8 +1,25 @@
 -- Secure loader for CAC Ultimate
 local HttpService = game:GetService("HttpService")
 
-local http_request = (syn and syn.request) or (http and http.request) or http_request or (fluxus and fluxus.request) or request
-if not http_request then
+local requestCandidates = {}
+local requestCandidateNames = {}
+local seenRequestCandidates = {}
+
+local function addRequestCandidate(name, fn)
+    if type(fn) == "function" and not seenRequestCandidates[fn] then
+        seenRequestCandidates[fn] = true
+        requestCandidates[#requestCandidates + 1] = fn
+        requestCandidateNames[#requestCandidateNames + 1] = name
+    end
+end
+
+addRequestCandidate("syn.request", syn and syn.request)
+addRequestCandidate("http.request", http and http.request)
+addRequestCandidate("http_request", http_request)
+addRequestCandidate("fluxus.request", fluxus and fluxus.request)
+addRequestCandidate("request", request)
+
+if #requestCandidates == 0 then
     error("Executor does not support HTTP requests")
 end
 
@@ -60,6 +77,18 @@ local function apiErrorMessage(prefix, response, data)
         return "HTTP " .. tostring(statusCode) .. ": " .. msg
     end
     return msg
+end
+
+local function requestWithCandidate(fn, options)
+    local ok, response = pcall(function()
+        return fn(options)
+    end)
+
+    if not ok or not response then
+        return false, nil
+    end
+
+    return true, response
 end
 
 local function gethwid()
@@ -198,48 +227,69 @@ local function readExplicitKeyFromShared(shared)
 end
 
 local function postJson(path, payload)
-    local ok, response = pcall(function()
-        return http_request({
+    local lastData = nil
+    local lastErr = "Network error: executor request failed before receiving a response"
+
+    for index, fn in ipairs(requestCandidates) do
+        local ok, response = requestWithCandidate(fn, {
             Url = API_BASE .. path,
             Method = "POST",
             Headers = { ["Content-Type"] = "application/json" },
             Body = HttpService:JSONEncode(payload)
         })
-    end)
 
-    if not ok or not response then
-        return false, nil, "Network error: executor request failed before receiving a response"
+        if not ok then
+            lastErr = "Network error via " .. tostring(requestCandidateNames[index])
+        else
+            local data = parseJson(response.Body or "")
+            local statusCode = getStatusCode(response)
+            if statusCode >= 200 and statusCode <= 299 then
+                return true, data, nil
+            end
+
+            lastData = data
+            lastErr = apiErrorMessage("Request failed", response, data) .. " via " .. tostring(requestCandidateNames[index])
+            if statusCode ~= 403 or (data and data.error) then
+                return false, data, lastErr
+            end
+        end
     end
 
-    local data = parseJson(response.Body or "")
-    local statusCode = getStatusCode(response)
-    if statusCode < 200 or statusCode > 299 then
-        return false, data, apiErrorMessage("Request failed", response, data)
-    end
-
-    return true, data, nil
+    return false, lastData, lastErr
 end
 
 local function getText(url)
-    local ok, response = pcall(function()
-        return http_request({ Url = url, Method = "GET" })
-    end)
-    if not ok or not response then
-        return false, nil, "Download failed"
-    end
-    local statusCode = getStatusCode(response)
-    if statusCode < 200 or statusCode > 299 then
-        local parsed = parseJson(response.Body or "")
-        if parsed and parsed.error and parsed.error.message then
-            return false, nil, "Download HTTP " .. tostring(statusCode) .. ": " .. tostring(parsed.error.message)
+    local lastErr = "Download failed"
+
+    for index, fn in ipairs(requestCandidates) do
+        local ok, response = requestWithCandidate(fn, { Url = url, Method = "GET" })
+        if not ok then
+            lastErr = "Download failed via " .. tostring(requestCandidateNames[index])
+        else
+            local statusCode = getStatusCode(response)
+            if statusCode >= 200 and statusCode <= 299 then
+                return true, response.Body, nil
+            end
+
+            local parsed = parseJson(response.Body or "")
+            if parsed and parsed.error and parsed.error.message then
+                lastErr = "Download HTTP " .. tostring(statusCode) .. ": " .. tostring(parsed.error.message) .. " via " .. tostring(requestCandidateNames[index])
+            else
+                local bodyHint = responsePreview(response.Body or "")
+                if bodyHint ~= "" then
+                    lastErr = "Download HTTP " .. tostring(statusCode) .. ": " .. bodyHint .. " via " .. tostring(requestCandidateNames[index])
+                else
+                    lastErr = "Download HTTP " .. tostring(statusCode) .. " via " .. tostring(requestCandidateNames[index])
+                end
+            end
+
+            if statusCode ~= 403 or (parsed and parsed.error) then
+                return false, nil, lastErr
+            end
         end
-        local bodyHint = responsePreview(response.Body or "")
-        if bodyHint ~= "" then
-            return false, nil, "Download HTTP " .. tostring(statusCode) .. ": " .. bodyHint
-        end
-        return false, nil, "Download HTTP " .. tostring(statusCode)
     end
-    return true, response.Body, nil
+
+    return false, nil, lastErr
 end
 
 local hwid = gethwid()
