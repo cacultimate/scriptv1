@@ -24,6 +24,37 @@ if #requestCandidates == 0 then
 end
 
 local API_BASE = "https://cac-licensing-api.cacultimatev1.workers.dev"
+local HTTP_HEADER_PROFILES = {
+    {
+        ["Content-Type"] = "application/json",
+        ["Accept"] = "application/json",
+        ["User-Agent"] = "Roblox/WinInet",
+        ["X-CAC-Client"] = "executor-loader"
+    },
+    {
+        ["Content-Type"] = "application/json",
+        ["Accept"] = "application/json, text/plain, */*",
+        ["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
+        ["X-CAC-Client"] = "executor-loader"
+    },
+    {
+        ["Content-Type"] = "application/json"
+    }
+}
+
+local HTTP_GET_HEADER_PROFILES = {
+    {
+        ["Accept"] = "text/plain, application/json, */*",
+        ["User-Agent"] = "Roblox/WinInet",
+        ["X-CAC-Client"] = "executor-loader"
+    },
+    {
+        ["Accept"] = "text/plain, application/json, */*",
+        ["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
+        ["X-CAC-Client"] = "executor-loader"
+    },
+    {}
+}
 
 local function getShared()
     local shared = (_G or {})
@@ -89,6 +120,13 @@ local function requestWithCandidate(fn, options)
     end
 
     return true, response
+end
+
+local function requestLabel(candidateName, profileIndex)
+    if profileIndex and profileIndex > 0 then
+        return tostring(candidateName) .. "/h" .. tostring(profileIndex)
+    end
+    return tostring(candidateName)
 end
 
 local function gethwid()
@@ -231,26 +269,29 @@ local function postJson(path, payload)
     local lastErr = "Network error: executor request failed before receiving a response"
 
     for index, fn in ipairs(requestCandidates) do
-        local ok, response = requestWithCandidate(fn, {
-            Url = API_BASE .. path,
-            Method = "POST",
-            Headers = { ["Content-Type"] = "application/json" },
-            Body = HttpService:JSONEncode(payload)
-        })
+        for profileIndex, headers in ipairs(HTTP_HEADER_PROFILES) do
+            local label = requestLabel(requestCandidateNames[index], profileIndex)
+            local ok, response = requestWithCandidate(fn, {
+                Url = API_BASE .. path,
+                Method = "POST",
+                Headers = headers,
+                Body = HttpService:JSONEncode(payload)
+            })
 
-        if not ok then
-            lastErr = "Network error via " .. tostring(requestCandidateNames[index])
-        else
-            local data = parseJson(response.Body or "")
-            local statusCode = getStatusCode(response)
-            if statusCode >= 200 and statusCode <= 299 then
-                return true, data, nil
-            end
+            if not ok then
+                lastErr = "Network error via " .. label
+            else
+                local data = parseJson(response.Body or "")
+                local statusCode = getStatusCode(response)
+                if statusCode >= 200 and statusCode <= 299 then
+                    return true, data, nil
+                end
 
-            lastData = data
-            lastErr = apiErrorMessage("Request failed", response, data) .. " via " .. tostring(requestCandidateNames[index])
-            if statusCode ~= 403 or (data and data.error) then
-                return false, data, lastErr
+                lastData = data
+                lastErr = apiErrorMessage("Request failed", response, data) .. " via " .. label
+                if statusCode ~= 403 or (data and data.error) then
+                    return false, data, lastErr
+                end
             end
         end
     end
@@ -262,29 +303,32 @@ local function getText(url)
     local lastErr = "Download failed"
 
     for index, fn in ipairs(requestCandidates) do
-        local ok, response = requestWithCandidate(fn, { Url = url, Method = "GET" })
-        if not ok then
-            lastErr = "Download failed via " .. tostring(requestCandidateNames[index])
-        else
-            local statusCode = getStatusCode(response)
-            if statusCode >= 200 and statusCode <= 299 then
-                return true, response.Body, nil
-            end
-
-            local parsed = parseJson(response.Body or "")
-            if parsed and parsed.error and parsed.error.message then
-                lastErr = "Download HTTP " .. tostring(statusCode) .. ": " .. tostring(parsed.error.message) .. " via " .. tostring(requestCandidateNames[index])
+        for profileIndex, headers in ipairs(HTTP_GET_HEADER_PROFILES) do
+            local label = requestLabel(requestCandidateNames[index], profileIndex)
+            local ok, response = requestWithCandidate(fn, { Url = url, Method = "GET", Headers = headers })
+            if not ok then
+                lastErr = "Download failed via " .. label
             else
-                local bodyHint = responsePreview(response.Body or "")
-                if bodyHint ~= "" then
-                    lastErr = "Download HTTP " .. tostring(statusCode) .. ": " .. bodyHint .. " via " .. tostring(requestCandidateNames[index])
-                else
-                    lastErr = "Download HTTP " .. tostring(statusCode) .. " via " .. tostring(requestCandidateNames[index])
+                local statusCode = getStatusCode(response)
+                if statusCode >= 200 and statusCode <= 299 then
+                    return true, response.Body, nil
                 end
-            end
 
-            if statusCode ~= 403 or (parsed and parsed.error) then
-                return false, nil, lastErr
+                local parsed = parseJson(response.Body or "")
+                if parsed and parsed.error and parsed.error.message then
+                    lastErr = "Download HTTP " .. tostring(statusCode) .. ": " .. tostring(parsed.error.message) .. " via " .. label
+                else
+                    local bodyHint = responsePreview(response.Body or "")
+                    if bodyHint ~= "" then
+                        lastErr = "Download HTTP " .. tostring(statusCode) .. ": " .. bodyHint .. " via " .. label
+                    else
+                        lastErr = "Download HTTP " .. tostring(statusCode) .. " via " .. label
+                    end
+                end
+
+                if statusCode ~= 403 or (parsed and parsed.error) then
+                    return false, nil, lastErr
+                end
             end
         end
     end
