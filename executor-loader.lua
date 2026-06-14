@@ -26,6 +26,42 @@ local function parseJson(raw)
     return nil
 end
 
+local function getStatusCode(response)
+    return tonumber(response and (response.StatusCode or response.Status or response.status_code or response.status)) or 0
+end
+
+local function responsePreview(body)
+    local text = tostring(body or "")
+    text = text:gsub("[%c\r\n\t]", " ")
+    text = text:gsub("%s+", " ")
+    if #text > 180 then
+        text = text:sub(1, 180) .. "..."
+    end
+    return text
+end
+
+local function apiErrorMessage(prefix, response, data)
+    local statusCode = getStatusCode(response)
+    local msg = prefix or "Request failed"
+    if data and data.error then
+        if data.error.message then
+            msg = tostring(data.error.message)
+        elseif data.error.code then
+            msg = tostring(data.error.code)
+        end
+    end
+
+    local bodyHint = responsePreview(response and response.Body or "")
+    if bodyHint ~= "" and (not data or not data.error) then
+        msg = msg .. " | body: " .. bodyHint
+    end
+
+    if statusCode > 0 then
+        return "HTTP " .. tostring(statusCode) .. ": " .. msg
+    end
+    return msg
+end
+
 local function gethwid()
     local file = "cac_ultimate_hwid_v4.txt"
     if isfile and readfile and writefile then
@@ -172,16 +208,13 @@ local function postJson(path, payload)
     end)
 
     if not ok or not response then
-        return false, nil, "Network error"
+        return false, nil, "Network error: executor request failed before receiving a response"
     end
 
     local data = parseJson(response.Body or "")
-    if response.StatusCode < 200 or response.StatusCode > 299 then
-        local msg = "Request failed"
-        if data and data.error and data.error.message then
-            msg = tostring(data.error.message)
-        end
-        return false, data, msg
+    local statusCode = getStatusCode(response)
+    if statusCode < 200 or statusCode > 299 then
+        return false, data, apiErrorMessage("Request failed", response, data)
     end
 
     return true, data, nil
@@ -194,12 +227,17 @@ local function getText(url)
     if not ok or not response then
         return false, nil, "Download failed"
     end
-    if response.StatusCode < 200 or response.StatusCode > 299 then
+    local statusCode = getStatusCode(response)
+    if statusCode < 200 or statusCode > 299 then
         local parsed = parseJson(response.Body or "")
         if parsed and parsed.error and parsed.error.message then
-            return false, nil, "Download HTTP " .. tostring(response.StatusCode) .. ": " .. tostring(parsed.error.message)
+            return false, nil, "Download HTTP " .. tostring(statusCode) .. ": " .. tostring(parsed.error.message)
         end
-        return false, nil, "Download HTTP " .. tostring(response.StatusCode)
+        local bodyHint = responsePreview(response.Body or "")
+        if bodyHint ~= "" then
+            return false, nil, "Download HTTP " .. tostring(statusCode) .. ": " .. bodyHint
+        end
+        return false, nil, "Download HTTP " .. tostring(statusCode)
     end
     return true, response.Body, nil
 end
